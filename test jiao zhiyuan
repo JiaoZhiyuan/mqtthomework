@@ -1,0 +1,118 @@
+!pip install "paho-mqtt<2.0.0"
+import paho.mqtt.client as mqtt
+import random
+import time
+import threading
+import unittest
+from unittest.mock import MagicMock, patch
+
+# 定义发布心跳数据的函数
+def publish_heartbeat(client_name, topic, stop_event=None):
+    client_connected = threading.Event()
+
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            print(f"{client_name} connected to broker")
+            client_connections[client_name] = True  # 更新连接状态
+            client_connected.set()  # 设置标志表示已连接
+        else:
+            print(f"{client_name} connection failed with code {rc}")
+
+    def on_disconnect(client, userdata, rc):
+        print(f"{client_name} disconnected from broker with code {rc}")
+        client_connections[client_name] = False  # 更新连接状态
+        client_connected.clear()  # 清除标志表示已断开连接
+
+    if client_connections.get(client_name):
+        print(f"{client_name} already connected, skipping...")
+        return
+
+    client = mqtt.Client(client_id=f"{client_name}_{int(time.time())}")
+    client.username_pw_set(username, password)
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+
+    client.connect(broker_address, port)
+    client.loop_start()
+
+    # 等待客户端连接成功
+    if not client_connected.wait(timeout=10):
+        print(f"{client_name} failed to connect within timeout")
+        return
+
+    while not (stop_event and stop_event.is_set()):
+        heartbeat = random.randint(60, 130)
+        client.publish(topic, heartbeat)
+        print(f"{client_name} sent heartbeat: {heartbeat}")
+        time.sleep(5)
+
+    client.loop_stop()
+    client.disconnect()
+
+# 全局字典用于跟踪每个客户端的连接状态
+client_connections = {}
+
+broker_address = "broker.emqx.io"
+port = 1883
+username = "test"
+password = "1"
+
+client_info = [
+    {"client_name": "client1", "topic": "patient/num1/heartbeat"},
+    {"client_name": "client2", "topic": "patient/num2/heartbeat"},
+    {"client_name": "client3", "topic": "patient/num3/heartbeat"},
+]
+
+# 初始化连接状态
+for info in client_info:
+    client_connections[info["client_name"]] = False
+
+# 测试代码
+class TestMQTTPublishHeartbeat(unittest.TestCase):
+
+    @patch('paho.mqtt.client.Client')
+    def test_publish_heartbeat(self, MockClient):
+        # 创建一个事件用于测试线程的启动和停止
+        stop_event = threading.Event()
+
+        # 设置模拟客户端的行为
+        mock_client = MockClient.return_value
+        mock_client.publish = MagicMock()
+        mock_client.connect = MagicMock()
+        mock_client.loop_start = MagicMock()
+        mock_client.loop_stop = MagicMock()
+        mock_client.disconnect = MagicMock()
+
+        # 启动线程来运行 publish_heartbeat 函数
+        def start_thread():
+            publish_heartbeat('test_client', 'test/topic', stop_event)
+
+        thread = threading.Thread(target=start_thread)
+        thread.start()
+
+        # 等待一些时间以确保线程运行
+        time.sleep(1)
+
+        # 检查连接和发布行为是否被正确调用
+        self.assertTrue(mock_client.connect.called)
+        self.assertTrue(mock_client.loop_start.called)
+        self.assertTrue(mock_client.publish.called)
+
+        # 触发停止事件并等待线程结束
+        stop_event.set()
+        thread.join()
+
+        # 检查客户端是否正确断开连接
+        self.assertTrue(mock_client.disconnect.called)
+
+    def test_client_connections(self):
+        # 初始化 client_connections 字典
+        for info in client_info:
+            client_connections[info["client_name"]] = False
+
+        # 检查 client_connections 字典是否正确初始化
+        for info in client_info:
+            self.assertFalse(client_connections[info["client_name"]])
+
+# 运行测试
+unittest.main(argv=[''], exit=False)
